@@ -7,14 +7,53 @@ from pathlib import Path
 from typing import List
 
 from src.utils.logger import logger, setup_logger
-from core.config import app_config
+from src.core.config import app_config
 
 setup_logger("synthetic-data-service", "INFO")
 
 class StorageManager:
-    """Manage storage for synthetic datasets"""
+    """
+    Manage storage operations for synthetic datasets and configuration files.
+    
+    This class provides a unified interface for file system operations related to
+    dataset generation, including directory management, path resolution, and dataset
+    discovery. It handles configuration-based path resolution with appropriate
+    fallbacks to default values.
+    
+    The StorageManager serves as an abstraction layer between the application and
+    the file system, ensuring consistent directory structures and providing utility
+    methods for common operations like directory preparation, cleaning, and listing
+    available datasets.
+    
+    Attributes:
+        config (Dict[str, Any]): Configuration dictionary for storage settings
+        dirs (Dict[str, str]): Directory paths from configuration
+        datasets_base_dir (str): Base directory for generated datasets
+        templates_dir (str): Directory for prompt templates
+        user_configs_dir (str): Directory for user configuration files
+    
+    Example:
+        ```python
+        # Create a storage manager with default configuration
+        storage = StorageManager()
+        
+        # Prepare output directory
+        output_path = "output_datasets/my_dataset"
+        storage.prepare_directory(output_path)
+        
+        # List available datasets
+        datasets = storage.list_datasets()
+        print(f"Available datasets: {datasets}")
+        
+        # Get size of a specific dataset
+        size = storage.get_dataset_size("my_dataset")
+        print(f"Dataset size: {size} bytes")
+        ```
+    """
 
-    def __init__(self):
+    def __init__(self,config=None):
+        self.config = config or app_config or {}
+        self.dirs = self.config.get("directories", {})
         self.datasets_base_dir = app_config.DATASETS_DIR if hasattr(app_config, 'DATASETS_DIR') else 'datasets'
         self.templates_dir = app_config.TEMPLATES_DIR if hasattr(app_config, 'TEMPLATES_DIR') else 'templates'
         self.user_configs_dir = app_config.USER_CONFIGS_DIR if hasattr(app_config, 'USER_CONFIGS_DIR') else 'user_configs'

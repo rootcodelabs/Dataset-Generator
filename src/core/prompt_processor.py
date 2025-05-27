@@ -1,6 +1,3 @@
-"""
-Process prompt templates for synthetic data generation
-"""
 import re
 import json
 from typing import Dict, Any
@@ -11,7 +8,40 @@ from src.utils.logger import logger, setup_logger
 setup_logger("synthetic-data-service", "INFO")  
 
 class PromptProcessor:
-    """Process prompt templates for synthetic data generation"""
+    """
+    Process prompt templates for synthetic data generation.
+    
+    This class handles the processing of text templates with variable substitution
+    and extraction of structured data (particularly JSON) from model responses.
+    It serves as a core utility in the dataset generation pipeline, enabling:
+    1. Variable interpolation in prompt templates using ${variable} syntax
+    2. Robust JSON extraction from potentially malformed or text-wrapped responses
+    
+    The processor uses Python's string.Template for parameter substitution
+    and regular expressions for JSON extraction, with multiple fallback patterns
+    to handle common response formatting issues from LLMs.
+    
+    Methods:
+        process(template: str, params: Dict[str, Any]) -> str:
+            Processes a template string by substituting variables with values from params
+            
+        extract_json(text: str) -> str:
+            Extracts valid JSON from text that might contain non-JSON content or formatting
+            
+    Example:
+        ```python
+        processor = PromptProcessor()
+        
+        # Process a template with variables
+        template = "Generate data about ${topic} in ${language}."
+        params = {"topic": "astronomy", "language": "Estonian"}
+        prompt = processor.process(template, params)
+        
+        # Extract JSON from model response
+        response = "Here's the data: ```json { \"name\": \"value\" } ```"
+        json_str = processor.extract_json(response)  # Returns: { "name": "value" }
+        ```
+    """
     
     def process(self, template: str, params: Dict[str, Any]) -> str:
         """
