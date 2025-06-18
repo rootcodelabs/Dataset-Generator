@@ -10,7 +10,7 @@ import os
 from constants import PREPROCESS_TEXT_PATTERN
 
 logger.remove()
-# add stout handler
+# add stdout handler
 logger.add(sys.stdout, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}")
 
 def read_file(file_path):
