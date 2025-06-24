@@ -22,7 +22,8 @@ var/
 .pytest_cache/
 
 # Virtual Environment
-venv/
+.venv/
+uv.lock
 ENV/
 .env
 
@@ -56,7 +57,7 @@ output_datasets_new/
 *.tmp
 .coverage
 htmlcov/
-
+*.pyc
 # Config files that might contain sensitive information
 config/*.env
 *.pem
