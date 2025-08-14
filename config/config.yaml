@@ -39,7 +39,7 @@ ollama:
 
 # MAIN PROVIDER SELECTION - THIS IS THE KEY SETTING
 provider:
-  name: "ollama"  # ⭐ THIS DETERMINES WHICH PROVIDER TO USE
+  name: "bedrock-anthropic"  # THIS DETERMINES WHICH PROVIDER TO USE
   timeout: 60
   max_retries: 3
   retry_delay: 5
@@ -47,7 +47,19 @@ provider:
 # Processing settings
 processing:
   wait_between_requests: 1
-  log_progress_every: 5
+  timeout_seconds: 1300  # 1 hour timeout for dataset processing
+  max_consecutive_failures: 3
+  success_rate_threshold: 0.8  # 80% success rate required
+  retry_on_failure: true
+
+# Callback configuration for external project notifications
+callback:
+  url: ""  # Set via environment variable CALLBACK_URL
+  timeout: 60.0  # Callback timeout in seconds
+  retries: 3  # Number of retry attempts
+  retry_backoff: true  # Use exponential backoff
+  include_error_details: true
+  include_summary: true
 
 # Batch generation settings (global)
 batch_generation:
@@ -75,17 +87,6 @@ generation:
   parameters:
     temperature: 0.7
     max_tokens: 4096
-
-# Generation defaults (from model_config.yaml)
-generation_defaults:
-  temperature: 0.95
-  max_tokens_per_response: 5000
-  num_predict: 5000
-
-# Content Processing
-content_processing:
-  max_content_length: 15000
-  content_overlap: 500
 
 # Language and Prompt Settings  
 language_settings:

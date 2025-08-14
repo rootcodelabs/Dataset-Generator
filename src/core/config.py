@@ -171,6 +171,13 @@ class ConfigLoader:
             "BEDROCK_MAX_TOKENS": "bedrock_anthropic.max_tokens",
             "BEDROCK_TOP_P": "bedrock_anthropic.top_p",
             "BEDROCK_TPM_LIMIT": "bedrock_anthropic.tpm_limit",
+            # Callback configuration
+            "CALLBACK_URL": "callback.url",
+            "CALLBACK_TIMEOUT": "callback.timeout",
+            "CALLBACK_RETRIES": "callback.retries",
+            "CALLBACK_RETRY_BACKOFF": "callback.retry_backoff",
+            "CALLBACK_INCLUDE_ERROR_DETAILS": "callback.include_error_details",
+            "CALLBACK_INCLUDE_SUMMARY": "callback.include_summary",
             # Directories
             "DATA_DIR": "directories.input",
             "OUTPUT_DIR": "directories.output",
@@ -181,9 +188,6 @@ class ConfigLoader:
             "DEFAULT_NUM_EXAMPLES": "generation.default_num_examples",
             "DEFAULT_TEMPERATURE": "generation.parameters.temperature",
             "MAX_TOKENS": "generation.parameters.max_tokens",
-            # Content processing
-            "MAX_CONTENT_LENGTH": "content_processing.max_content_length",
-            "CONTENT_OVERLAP": "content_processing.content_overlap",
             # Language settings
             "DEFAULT_SYSTEM_PROMPT": "language_settings.default_system_prompt",
             # Storage settings

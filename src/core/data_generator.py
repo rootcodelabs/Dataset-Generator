@@ -253,10 +253,11 @@ class DataGenerator:
             logger.info("=" * 80)
 
             generated_items = []
+            generation_errors = []  # Track errors
             
             # Check if provider supports efficient batch generation
             if self.model_provider.supports_batch_generation() and path_examples > 1:
-                logger.info(f"🚀 USING BATCH GENERATION for {path_examples} examples")
+                logger.info(f"USING BATCH GENERATION for {path_examples} examples")
                 
                 try:
                     # Prepare common parameters for all samples
@@ -309,7 +310,7 @@ class DataGenerator:
                     while remaining_examples > 0:
                         current_batch_size = min(remaining_examples, batch_size)
                         
-                        logger.info(f"📦 Generating batch of {current_batch_size} examples...")
+                        logger.info(f"Generating batch of {current_batch_size} examples...")
                         
                         # Single batch call
                         batch_responses = self.model_provider.generate_batch(
@@ -367,6 +368,9 @@ class DataGenerator:
             if len(generated_items) < path_examples:
                 remaining = path_examples - len(generated_items)
                 logger.info(f"USING INDIVIDUAL GENERATION for {remaining} examples")
+                
+                consecutive_failures = 0  # Track consecutive failures
+                max_consecutive_failures = self.config.get("generation", {}).get("max_consecutive_failures", 3)
                 
                 for i in range(remaining):
                     current_example_num = len(generated_items) + 1
@@ -461,7 +465,33 @@ class DataGenerator:
                                 time.sleep(wait_time)
                                 
                     except Exception as e:
+                        consecutive_failures += 1  # Increment failure count
+                        error_msg = f"Individual example {current_example_num} failed: {str(e)}"
                         logger.error(f"INDIVIDUAL EXAMPLE {current_example_num} FAILED: {str(e)}")
+                        generation_errors.append(error_msg)  # Track error
+                        
+                        # Stop if too many consecutive failures
+                        if consecutive_failures >= max_consecutive_failures:
+                            fatal_error = f"Stopping generation after {max_consecutive_failures} consecutive failures"
+                            logger.error(f"FATAL: {fatal_error}")
+                            generation_errors.append(fatal_error)
+                            break
+                    else:
+                        consecutive_failures = 0  # Reset on success
+
+            # Check if generation was successful enough
+            success_rate = len(generated_items) / path_examples if path_examples > 0 else 0
+            min_success_rate = self.config.get("generation", {}).get("min_example_success_rate", 0.5)
+            
+            if success_rate < min_success_rate:
+                error_msg = f"Generation failed: only {len(generated_items)}/{path_examples} examples generated (success rate: {success_rate:.1%})"
+                logger.error(error_msg)
+                # Raise exception to be caught by caller
+                raise RuntimeError(f"{error_msg}. Errors: {'; '.join(generation_errors)}")
+            
+            # Log warnings for partial success
+            if generation_errors:
+                logger.warning(f"Generation completed with errors: {'; '.join(generation_errors)}")
 
             logger.info("=" * 80)
             logger.info(f"GENERATION COMPLETED FOR FILE: {relative_file_key}")
