@@ -47,7 +47,7 @@ def get_provider(config: Dict[str, Any] = None) -> ModelProvider:
     providers = {
         "ollama": lambda cfg: OllamaProvider(cfg),
         "bedrock-anthropic": lambda cfg: BedrockAnthropicProvider(cfg),
-        "azure-openai": lambda cfg: AzureOpenAIProvider(cfg)
+        "azure-openai": lambda cfg: AzureOpenAIProvider(cfg),
         # Add more providers here as needed
     }
 

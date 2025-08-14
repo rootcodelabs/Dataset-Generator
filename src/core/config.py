@@ -56,7 +56,7 @@ class ConfigLoader:
     DEFAULT_PATHS = [
         "config/config.yaml",
         "src/config/config.yaml",
-        "/app/config/config.yaml"
+        "/app/config/config.yaml",
     ]
 
     @classmethod

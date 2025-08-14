@@ -56,7 +56,7 @@ class DataGenerator:
 
         # Initialize provider
         provider_config = self.config.get("provider", {})
-        
+
         # Merge provider-specific configuration if applicable
         provider_name = provider_config.get("name", "ollama")
         if provider_name == "bedrock-anthropic":
@@ -68,8 +68,10 @@ class DataGenerator:
             # Merge azure_openai config into provider config
             azure_config = self.config.get("azure_openai", {})
             provider_config = {**provider_config, **azure_config}
-            logger.debug(f"Merged Azure OpenAI configuration: {list(azure_config.keys())}")
-        
+            logger.debug(
+                f"Merged Azure OpenAI configuration: {list(azure_config.keys())}"
+            )
+
         self.model_provider = get_provider(provider_config)
 
         # Create model client from provider
@@ -249,20 +251,24 @@ class DataGenerator:
             logger.info(f"STARTING GENERATION FOR FILE: {relative_file_key}")
             logger.info(f"REQUESTED EXAMPLES: {path_examples}")
             logger.info(f"PROVIDER: {self.model_provider.__class__.__name__}")
-            logger.info(f"BATCH SUPPORT: {self.model_provider.supports_batch_generation()}")
+            logger.info(
+                f"BATCH SUPPORT: {self.model_provider.supports_batch_generation()}"
+            )
             logger.info("=" * 80)
 
             generated_items = []
             generation_errors = []  # Track errors
-            
+
             # Check if provider supports efficient batch generation
             if self.model_provider.supports_batch_generation() and path_examples > 1:
                 logger.info(f"USING BATCH GENERATION for {path_examples} examples")
-                
+
                 try:
                     # Prepare common parameters for all samples
                     if self.config:
-                        default_language = getattr(self.config, "DEFAULT_LANGUAGE", "et")
+                        default_language = getattr(
+                            self.config, "DEFAULT_LANGUAGE", "et"
+                        )
                         supported_languages = getattr(
                             self.config,
                             "SUPPORTED_LANGUAGES",
@@ -281,7 +287,7 @@ class DataGenerator:
                             "fi": "Finnish",
                         }
                         default_system_prompt = "You are a helpful assistant providing accurate information based on topic content."
-                    
+
                     current_language_code = parameters.get("language", default_language)
                     language_name = supported_languages.get(
                         current_language_code, current_language_code
@@ -289,7 +295,7 @@ class DataGenerator:
                     current_system_prompt = parameters.get(
                         "system_prompt", default_system_prompt
                     )
-                    
+
                     # Create base prompt parameters (same for all samples)
                     base_prompt_params = {
                         "path": relative_file_key,
@@ -299,25 +305,30 @@ class DataGenerator:
                         "system_prompt": current_system_prompt,
                         **parameters,
                     }
-                    
+
                     # Process template once for batch generation
-                    prompt = self.prompt_processor.process(prompt_template, base_prompt_params)
-                    
+                    prompt = self.prompt_processor.process(
+                        prompt_template, base_prompt_params
+                    )
+
                     # Generate all samples in batches
-                    batch_size = min(path_examples, 10)  # Limit batch size to avoid token limits
+                    batch_size = min(
+                        path_examples, 10
+                    )  # Limit batch size to avoid token limits
                     remaining_examples = path_examples
-                    
+
                     while remaining_examples > 0:
                         current_batch_size = min(remaining_examples, batch_size)
-                        
-                        logger.info(f"Generating batch of {current_batch_size} examples...")
-                        
+
+                        logger.info(
+                            f"Generating batch of {current_batch_size} examples..."
+                        )
+
                         # Single batch call
                         batch_responses = self.model_provider.generate_batch(
-                            prompt, 
-                            current_batch_size
+                            prompt, current_batch_size
                         )
-                        
+
                         # Process each response in the batch
                         for i, content in enumerate(batch_responses):
                             try:
@@ -326,14 +337,20 @@ class DataGenerator:
                                     try:
                                         # Try to parse as JSON first
                                         parsed = json.loads(content)
-                                        if isinstance(parsed, list):  # If model returns a list for one call
+                                        if isinstance(
+                                            parsed, list
+                                        ):  # If model returns a list for one call
                                             generated_items.extend(parsed)
                                         else:  # Assume model returns one item per call
                                             generated_items.append(parsed)
-                                        logger.debug(f"BATCH SAMPLE {i+1}: parsed JSON successfully")
+                                        logger.debug(
+                                            f"BATCH SAMPLE {i + 1}: parsed JSON successfully"
+                                        )
                                     except json.JSONDecodeError:
                                         # If it's not JSON, try to extract JSON
-                                        extracted = self.prompt_processor.extract_json(content)
+                                        extracted = self.prompt_processor.extract_json(
+                                            content
+                                        )
                                         if extracted:
                                             try:
                                                 parsed = json.loads(extracted)
@@ -341,44 +358,60 @@ class DataGenerator:
                                                     generated_items.extend(parsed)
                                                 else:
                                                     generated_items.append(parsed)
-                                                logger.debug(f"BATCH SAMPLE {i+1}: extracted and parsed JSON")
+                                                logger.debug(
+                                                    f"BATCH SAMPLE {i + 1}: extracted and parsed JSON"
+                                                )
                                             except json.JSONDecodeError:
                                                 # If extraction also fails, skip this sample
-                                                logger.debug(f"BATCH SAMPLE {i+1}: could not parse as JSON, skipping")
+                                                logger.debug(
+                                                    f"BATCH SAMPLE {i + 1}: could not parse as JSON, skipping"
+                                                )
                                                 continue
                                         else:
-                                            logger.debug(f"BATCH SAMPLE {i+1}: no JSON found, skipping")
+                                            logger.debug(
+                                                f"BATCH SAMPLE {i + 1}: no JSON found, skipping"
+                                            )
                                             continue
                                 else:  # For text or other formats, append raw content
                                     generated_items.append(content)
-                                    logger.debug(f"BATCH SAMPLE {i+1}: using raw content")
-                                
+                                    logger.debug(
+                                        f"BATCH SAMPLE {i + 1}: using raw content"
+                                    )
+
                             except Exception as e:
-                                logger.error(f"Failed to process batch sample {i+1}: {str(e)}")
-                        
+                                logger.error(
+                                    f"Failed to process batch sample {i + 1}: {str(e)}"
+                                )
+
                         remaining_examples -= current_batch_size
-                        
+
                 except Exception as e:
                     logger.error(f"BATCH GENERATION FAILED: {str(e)}")
                     logger.info("FALLING BACK to individual generation")
                     # Clear any partial results and fall through to individual generation
                     generated_items = []
-            
+
             # Individual generation (for Ollama or batch fallback)
             if len(generated_items) < path_examples:
                 remaining = path_examples - len(generated_items)
                 logger.info(f"USING INDIVIDUAL GENERATION for {remaining} examples")
-                
+
                 consecutive_failures = 0  # Track consecutive failures
-                max_consecutive_failures = self.config.get("generation", {}).get("max_consecutive_failures", 3)
-                
+                max_consecutive_failures = self.config.get("generation", {}).get(
+                    "max_consecutive_failures", 3
+                )
+
                 for i in range(remaining):
                     current_example_num = len(generated_items) + 1
-                    logger.info(f"GENERATING INDIVIDUAL EXAMPLE {current_example_num}/{path_examples}")
-                    
+                    logger.info(
+                        f"GENERATING INDIVIDUAL EXAMPLE {current_example_num}/{path_examples}"
+                    )
+
                     try:
                         if self.config:
-                            default_language = getattr(self.config, "DEFAULT_LANGUAGE", "et")
+                            default_language = getattr(
+                                self.config, "DEFAULT_LANGUAGE", "et"
+                            )
                             supported_languages = getattr(
                                 self.config,
                                 "SUPPORTED_LANGUAGES",
@@ -397,15 +430,17 @@ class DataGenerator:
                                 "fi": "Finnish",
                             }
                             default_system_prompt = "You are a helpful assistant providing accurate information based on topic content."
-                        
-                        current_language_code = parameters.get("language", default_language)
+
+                        current_language_code = parameters.get(
+                            "language", default_language
+                        )
                         language_name = supported_languages.get(
                             current_language_code, current_language_code
                         )
                         current_system_prompt = parameters.get(
                             "system_prompt", default_system_prompt
                         )
-                        
+
                         prompt_params = {
                             "index": current_example_num - 1,
                             "path": relative_file_key,
@@ -420,7 +455,9 @@ class DataGenerator:
                             f"Using language: {language_name} ({current_language_code})"
                         )
                         logger.debug(f"Prompt params: {prompt_params}")
-                        prompt = self.prompt_processor.process(prompt_template, prompt_params)
+                        prompt = self.prompt_processor.process(
+                            prompt_template, prompt_params
+                        )
                         content = self.model_client.generate(prompt)
 
                         # Process content (especially for JSON aggregation)
@@ -454,22 +491,32 @@ class DataGenerator:
                                     continue
                         else:  # For text or other formats, append raw content
                             generated_items.append(content)
-                            
-                        logger.info(f"INDIVIDUAL EXAMPLE {current_example_num} completed")
-                        
+
+                        logger.info(
+                            f"INDIVIDUAL EXAMPLE {current_example_num} completed"
+                        )
+
                         # Wait between individual requests
                         if i < remaining - 1:
-                            wait_time = self.config.get("processing", {}).get("wait_between_requests", 1)
+                            wait_time = self.config.get("processing", {}).get(
+                                "wait_between_requests", 1
+                            )
                             if wait_time > 0:
-                                logger.info(f"Waiting {wait_time}s before next example...")
+                                logger.info(
+                                    f"Waiting {wait_time}s before next example..."
+                                )
                                 time.sleep(wait_time)
-                                
+
                     except Exception as e:
                         consecutive_failures += 1  # Increment failure count
-                        error_msg = f"Individual example {current_example_num} failed: {str(e)}"
-                        logger.error(f"INDIVIDUAL EXAMPLE {current_example_num} FAILED: {str(e)}")
+                        error_msg = (
+                            f"Individual example {current_example_num} failed: {str(e)}"
+                        )
+                        logger.error(
+                            f"INDIVIDUAL EXAMPLE {current_example_num} FAILED: {str(e)}"
+                        )
                         generation_errors.append(error_msg)  # Track error
-                        
+
                         # Stop if too many consecutive failures
                         if consecutive_failures >= max_consecutive_failures:
                             fatal_error = f"Stopping generation after {max_consecutive_failures} consecutive failures"
@@ -480,22 +527,32 @@ class DataGenerator:
                         consecutive_failures = 0  # Reset on success
 
             # Check if generation was successful enough
-            success_rate = len(generated_items) / path_examples if path_examples > 0 else 0
-            min_success_rate = self.config.get("generation", {}).get("min_example_success_rate", 0.5)
-            
+            success_rate = (
+                len(generated_items) / path_examples if path_examples > 0 else 0
+            )
+            min_success_rate = self.config.get("generation", {}).get(
+                "min_example_success_rate", 0.5
+            )
+
             if success_rate < min_success_rate:
                 error_msg = f"Generation failed: only {len(generated_items)}/{path_examples} examples generated (success rate: {success_rate:.1%})"
                 logger.error(error_msg)
                 # Raise exception to be caught by caller
-                raise RuntimeError(f"{error_msg}. Errors: {'; '.join(generation_errors)}")
-            
+                raise RuntimeError(
+                    f"{error_msg}. Errors: {'; '.join(generation_errors)}"
+                )
+
             # Log warnings for partial success
             if generation_errors:
-                logger.warning(f"Generation completed with errors: {'; '.join(generation_errors)}")
+                logger.warning(
+                    f"Generation completed with errors: {'; '.join(generation_errors)}"
+                )
 
             logger.info("=" * 80)
             logger.info(f"GENERATION COMPLETED FOR FILE: {relative_file_key}")
-            logger.info(f"TOTAL EXAMPLES GENERATED: {len(generated_items)}/{path_examples}")
+            logger.info(
+                f"TOTAL EXAMPLES GENERATED: {len(generated_items)}/{path_examples}"
+            )
             logger.info("=" * 80)
 
             # Save all generated items to the single file
