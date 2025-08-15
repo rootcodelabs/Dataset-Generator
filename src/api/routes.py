@@ -66,13 +66,6 @@ class DatasetRequest(BaseModel):
                 raise ValueError("version_id contains invalid characters")
         return v.strip() if v else "v1"
 
-    # @field_validator("session_id")
-    # @classmethod
-    # def validate_session_id(cls, v):
-    #     if v is not None and not isinstance(v, int):
-    #         raise ValueError("session_id must be an integer")
-    #     return v
-
 
 class BulkGenerateRequest(BaseModel):
     datasets: List[DatasetRequest] = Field(
@@ -119,25 +112,83 @@ def get_data_generator(request: Request) -> DataGenerator:
     return DataGenerator(request.app.state.config)
 
 
-async def send_callback(callback_url: str, payload: dict, max_retries: int = 3):
-    """Send callback notification to external system"""
+async def send_callback(
+    callback_url: str, payload: dict, max_retries: int = 3, timeout: float = 30.0
+):
+    """Send callback notification to external system with enhanced error handling"""
     if not callback_url:
         logger.info("No callback URL configured, skipping callback")
-        return
+        return {"success": False, "reason": "no_url_configured"}
+
+    callback_start_time = time.time()
+    last_error = None
 
     for attempt in range(max_retries):
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # Calculate remaining timeout
+            elapsed = time.time() - callback_start_time
+            remaining_timeout = max(5.0, timeout - elapsed)  # Minimum 5 seconds
+
+            if remaining_timeout <= 0:
+                logger.error(f"Callback timeout exceeded before attempt {attempt + 1}")
+                return {
+                    "success": False,
+                    "reason": "timeout_exceeded",
+                    "attempts": attempt,
+                    "last_error": "Timeout exceeded before all retry attempts",
+                }
+
+            async with httpx.AsyncClient(timeout=remaining_timeout) as client:
                 response = await client.post(callback_url, json=payload)
                 response.raise_for_status()
-                logger.info(f"Callback sent successfully to {callback_url}")
-                return
+
+                logger.info(
+                    f"Callback sent successfully to {callback_url} on attempt {attempt + 1}"
+                )
+                return {
+                    "success": True,
+                    "attempts": attempt + 1,
+                    "response_status": response.status_code,
+                }
+
+        except httpx.TimeoutException as e:
+            last_error = f"Timeout error: {str(e)}"
+            logger.warning(f"Callback attempt {attempt + 1} timed out: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            last_error = f"HTTP error {e.response.status_code}: {str(e)}"
+            logger.warning(
+                f"Callback attempt {attempt + 1} failed with HTTP error: {str(e)}"
+            )
+        except httpx.RequestError as e:
+            last_error = f"Request error: {str(e)}"
+            logger.warning(
+                f"Callback attempt {attempt + 1} failed with request error: {str(e)}"
+            )
         except Exception as e:
-            logger.warning(f"Callback attempt {attempt + 1} failed: {str(e)}")
-            if attempt == max_retries - 1:
-                logger.error(f"All callback attempts failed for {callback_url}")
-            else:
-                await asyncio.sleep(2**attempt)
+            last_error = f"Unexpected error: {str(e)}"
+            logger.warning(
+                f"Callback attempt {attempt + 1} failed with unexpected error: {str(e)}"
+            )
+
+        # Exponential backoff with jitter, but don't wait on the last attempt
+        if attempt < max_retries - 1:
+            backoff_time = min(
+                30.0, (2**attempt) + (time.time() % 1)
+            )  # Max 30 seconds with jitter
+            logger.info(
+                f"Waiting {backoff_time:.1f} seconds before retry {attempt + 2}"
+            )
+            await asyncio.sleep(backoff_time)
+
+    logger.error(
+        f"All {max_retries} callback attempts failed for {callback_url}. Last error: {last_error}"
+    )
+    return {
+        "success": False,
+        "reason": "all_attempts_failed",
+        "attempts": max_retries,
+        "last_error": last_error,
+    }
 
 
 async def process_single_dataset(
@@ -170,7 +221,21 @@ async def process_single_dataset(
         - Handles validation and error reporting for missing data sources or configuration issues.
         - Used internally by the bulk dataset generation API endpoint.
     """
+    error_details = {
+        "category": None,
+        "stage": None,
+        "source_path": dataset_request.data_path,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "recoverable": False,
+    }
+
     try:
+        start_time = time.time()
+        timeout_seconds = config.get("processing", {}).get(
+            "timeout_seconds", 3600
+        )  # 1 hour default
+
+        error_details["stage"] = "configuration_loading"
         dataset_config = config.get("dataset_generation", {})
 
         # Extract all parameters from config
@@ -183,6 +248,25 @@ async def process_single_dataset(
         parameters = dataset_config.get("parameters", {})
         filter_config = dataset_config.get("filter", {})
         post_processing_type = dataset_config.get("post_processing", "zip")
+
+        # Validate required parameters
+        if not structure_name or not prompt_template_name:
+            error_details.update(
+                {
+                    "category": "configuration_error",
+                    "stage": "validation",
+                    "recoverable": True,
+                    "details": f"Missing required configuration: structure_name={structure_name}, prompt_template_name={prompt_template_name}",
+                }
+            )
+            return {
+                "success": False,
+                "error": "Missing required configuration parameters",
+                "error_details": error_details,
+                "dataset_metadata": dataset_request.dict(),
+            }
+
+        error_details["stage"] = "data_source_loading"
 
         # Override output_filename if provided in request
         modified_config = config.copy()
@@ -206,7 +290,23 @@ async def process_single_dataset(
         # Create data source manager
         source_manager = DataSourceManager(config=data_source_config)
 
-        # Load all matching sources
+        # Load all matching sources with timeout protection
+        if time.time() - start_time > timeout_seconds:
+            error_details.update(
+                {
+                    "category": "timeout_error",
+                    "stage": "data_source_loading",
+                    "recoverable": False,
+                    "details": f"Operation timed out after {timeout_seconds} seconds",
+                }
+            )
+            return {
+                "success": False,
+                "error": f"Processing timeout after {timeout_seconds} seconds",
+                "error_details": error_details,
+                "dataset_metadata": dataset_request.dict(),
+            }
+
         data_sources = source_manager.load_sources(
             base_path=data_path,
             strategy_name=traversal_strategy,
@@ -214,9 +314,18 @@ async def process_single_dataset(
         )
 
         if not data_sources:
+            error_details.update(
+                {
+                    "category": "data_error",
+                    "stage": "data_source_loading",
+                    "recoverable": True,
+                    "details": f"No matching data sources found in {data_path} with strategy {traversal_strategy}",
+                }
+            )
             return {
                 "success": False,
                 "error": f"No data sources found matching the criteria in {data_path}",
+                "error_details": error_details,
                 "dataset_metadata": dataset_request.dict(),
             }
 
@@ -224,57 +333,110 @@ async def process_single_dataset(
             f"Found {len(data_sources)} data sources to process for {data_path}"
         )
 
+        error_details["stage"] = "dataset_generation"
         # Track all output paths for post-processing
         all_output_paths = []
         results = []
+        generation_errors = []
 
         for source in data_sources:
-            # Extract metadata for parameters
-            source_params = parameters.copy()
-
-            # Add source metadata to parameters
-            if traversal_strategy == "institutional":
-                source_params["institution"] = source.metadata.get(
-                    "institution", "unknown"
+            # Check timeout before processing each source
+            if time.time() - start_time > timeout_seconds:
+                error_details.update(
+                    {
+                        "category": "timeout_error",
+                        "stage": "dataset_generation",
+                        "recoverable": False,
+                        "details": f"Operation timed out after {timeout_seconds} seconds during source processing",
+                    }
                 )
-                source_params["topic"] = source.metadata.get("topic", "unknown")
-                source_params["topic_content"] = source.content
-            else:
-                source_params["file_path"] = source.path
-                source_params["file_content"] = source.content
-                source_params["file_name"] = source.name
+                return {
+                    "success": False,
+                    "error": f"Processing timeout after {timeout_seconds} seconds",
+                    "error_details": error_details,
+                    "dataset_metadata": dataset_request.dict(),
+                    "partial_results": results,
+                }
 
-                for key, value in source.metadata.items():
-                    if key not in source_params:
-                        source_params[key] = value
+            try:
+                # Extract metadata for parameters
+                source_params = parameters.copy()
 
-            # Determine output path based on metadata
-            if traversal_strategy == "institutional":
-                topic = source.metadata.get("topic", "unknown")
-                output_base_path = (
-                    f"{output_dir}/{structure_name}/{agency_name}/{topic}"
+                # Add source metadata to parameters
+                if traversal_strategy == "institutional":
+                    source_params["institution"] = source.metadata.get(
+                        "institution", "unknown"
+                    )
+                    source_params["topic"] = source.metadata.get("topic", "unknown")
+                    source_params["topic_content"] = source.content
+                else:
+                    source_params["file_path"] = source.path
+                    source_params["file_content"] = source.content
+                    source_params["file_name"] = source.name
+
+                    for key, value in source.metadata.items():
+                        if key not in source_params:
+                            source_params[key] = value
+
+                # Determine output path based on metadata
+                if traversal_strategy == "institutional":
+                    topic = source.metadata.get("topic", "unknown")
+                    output_base_path = (
+                        f"{output_dir}/{structure_name}/{agency_name}/{topic}"
+                    )
+                else:
+                    rel_path = source.metadata.get("relative_path", source.name)
+                    output_base_path = f"{output_dir}/{agency_name}/{rel_path}"
+
+                logger.info(
+                    f"Generating dataset for source: {source.path} -> {output_base_path}"
                 )
-            else:
-                rel_path = source.metadata.get("relative_path", source.name)
-                output_base_path = f"{output_dir}/{agency_name}/{rel_path}"
 
-            logger.info(
-                f"Generating dataset for source: {source.path} -> {output_base_path}"
+                # Generate dataset
+                result_path = data_generator.generate(
+                    structure_name=structure_name,
+                    prompt_template_name=prompt_template_name,
+                    output_base_path=output_base_path,
+                    num_examples=num_examples,
+                    output_format=output_format,
+                    parameters=source_params,
+                )
+
+                all_output_paths.append(result_path)
+                results.append({"source": source.path, "output_path": result_path})
+
+            except Exception as source_error:
+                error_msg = f"Failed to generate dataset for source {source.path}: {str(source_error)}"
+                logger.error(error_msg)
+                generation_errors.append(
+                    {
+                        "source": source.path,
+                        "error": str(source_error),
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                )
+                # Continue processing other sources instead of failing completely
+
+        # Check if we have any successful results
+        if not all_output_paths and generation_errors:
+            error_details.update(
+                {
+                    "category": "generation_error",
+                    "stage": "dataset_generation",
+                    "recoverable": False,
+                    "details": f"All {len(generation_errors)} sources failed to generate",
+                    "source_errors": generation_errors,
+                }
             )
+            return {
+                "success": False,
+                "error": f"All {len(generation_errors)} data sources failed to generate datasets",
+                "error_details": error_details,
+                "dataset_metadata": dataset_request.dict(),
+                "generation_errors": generation_errors,
+            }
 
-            # Generate dataset
-            result_path = data_generator.generate(
-                structure_name=structure_name,
-                prompt_template_name=prompt_template_name,
-                output_base_path=output_base_path,
-                num_examples=num_examples,
-                output_format=output_format,
-                parameters=source_params,
-            )
-
-            all_output_paths.append(result_path)
-            results.append({"source": source.path, "output_path": result_path})
-
+        error_details["stage"] = "post_processing"
         # MODIFIED: Post-processing logic to handle cross-dataset aggregation
         final_output_path = None
 
@@ -285,7 +447,7 @@ async def process_single_dataset(
             )
             # Individual files will be collected for final cross-dataset aggregation
 
-            return {
+            result = {
                 "success": True,
                 "dataset_metadata": dataset_request.model_dump(),
                 "post_processing_type": post_processing_type,
@@ -300,21 +462,55 @@ async def process_single_dataset(
                     "post_processing": post_processing_type,
                 },
             }
+
+            # Add error information if there were partial failures
+            if generation_errors:
+                result.update(
+                    {
+                        "generation_errors": generation_errors,
+                        "sources_processed": len(data_sources),
+                        "sources_successful": len(results),
+                        "sources_failed": len(generation_errors),
+                    }
+                )
+
+            return result
         else:
             # For non-aggregation modes (like zip), perform individual post-processing
             logger.info(
                 f"Performing individual {post_processing_type} post-processing for {dataset_request.data_path}"
             )
 
-            # base_output_dir = f"{output_dir}/{structure_name}"
-            base_output_dir = f"{output_dir}"
-            post_processor = PostProcessorFactory.create_post_processor(modified_config)
-            final_output_path = post_processor.process(
-                all_output_paths, base_output_dir
-            )
+            try:
+                base_output_dir = f"{output_dir}"
+                post_processor = PostProcessorFactory.create_post_processor(
+                    modified_config
+                )
+                final_output_path = post_processor.process(
+                    all_output_paths, base_output_dir
+                )
+            except Exception as post_error:
+                error_details.update(
+                    {
+                        "category": "post_processing_error",
+                        "stage": "post_processing",
+                        "recoverable": True,
+                        "details": f"Post-processing failed: {str(post_error)}",
+                    }
+                )
+                result = {
+                    "success": False,
+                    "error": f"Post-processing failed: {str(post_error)}",
+                    "error_details": error_details,
+                    "dataset_metadata": dataset_request.dict(),
+                    "_internal_results": results,
+                }
+                if generation_errors:
+                    result["generation_errors"] = generation_errors
+                return result
 
             if final_output_path:
-                return {
+                result = {
                     "success": True,
                     "dataset_metadata": dataset_request.dict(),
                     "post_processing_type": post_processing_type,
@@ -329,21 +525,81 @@ async def process_single_dataset(
                         "post_processing": post_processing_type,
                     },
                 }
+
+                # Add error information if there were partial failures
+                if generation_errors:
+                    result.update(
+                        {
+                            "generation_errors": generation_errors,
+                            "sources_processed": len(data_sources),
+                            "sources_successful": len(results),
+                            "sources_failed": len(generation_errors),
+                        }
+                    )
+
+                return result
             else:
-                return {
+                error_details.update(
+                    {
+                        "category": "post_processing_error",
+                        "stage": "post_processing",
+                        "recoverable": True,
+                        "details": "Post-processing completed but no output path was returned",
+                    }
+                )
+                result = {
                     "success": False,
                     "error": "Post-processing failed",
+                    "error_details": error_details,
                     "dataset_metadata": dataset_request.dict(),
-                    "_internal_results": results,  # Keep for consistency
+                    "_internal_results": results,
                 }
+                if generation_errors:
+                    result["generation_errors"] = generation_errors
+                return result
 
     except Exception as e:
+        # Categorize the error based on its type and stage
+        if "timeout" in str(e).lower():
+            error_details.update(
+                {
+                    "category": "timeout_error",
+                    "recoverable": False,
+                    "details": f"Operation timed out: {str(e)}",
+                }
+            )
+        elif "permission" in str(e).lower() or "access" in str(e).lower():
+            error_details.update(
+                {
+                    "category": "permission_error",
+                    "recoverable": True,
+                    "details": f"Access/permission error: {str(e)}",
+                }
+            )
+        elif "network" in str(e).lower() or "connection" in str(e).lower():
+            error_details.update(
+                {
+                    "category": "network_error",
+                    "recoverable": True,
+                    "details": f"Network/connection error: {str(e)}",
+                }
+            )
+        else:
+            error_details.update(
+                {
+                    "category": "unknown_error",
+                    "recoverable": False,
+                    "details": f"Unexpected error: {str(e)}",
+                }
+            )
+
         logger.exception(
             f"Error processing dataset {dataset_request.data_path}: {str(e)}"
         )
         return {
             "success": False,
             "error": str(e),
+            "error_details": error_details,
             "dataset_metadata": dataset_request.dict(),
         }
 
@@ -524,45 +780,131 @@ async def background_generate_bulk(
         # Send callback if configured
         callback_config = config.get("callback", {})
         callback_url = callback_config.get("url")
+        callback_timeout = callback_config.get("timeout", 60.0)
+        callback_retries = callback_config.get("retries", 3)
 
         if callback_url:
-            # Clean up internal results before sending callback
+            # Clean up internal results before sending callback and add error summaries
             cleaned_results = []
+            total_generation_errors = 0
+            error_categories = {}
+
             for result in all_results:
                 cleaned_result = result.copy()
                 if "_internal_results" in cleaned_result:
                     del cleaned_result["_internal_results"]
+
+                # Aggregate error information
+                if "generation_errors" in result:
+                    total_generation_errors += len(result["generation_errors"])
+
+                if "error_details" in result:
+                    category = result["error_details"].get("category", "unknown")
+                    error_categories[category] = error_categories.get(category, 0) + 1
+
                 cleaned_results.append(cleaned_result)
 
+            # Enhanced callback payload with detailed error information
             callback_payload = {
                 "task_id": session_id,
                 "status": final_status,
                 "message": task_status_store[task_id]["message"],
                 "filePath": final_aggregated_path,
                 "results": cleaned_results,
+                "summary": {
+                    "total_datasets": len(request_data.datasets),
+                    "successful_datasets": successful_count,
+                    "failed_datasets": failed_count,
+                    "total_generation_errors": total_generation_errors,
+                    "error_categories": error_categories,
+                    "processing_completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "has_partial_failures": total_generation_errors > 0
+                    and successful_count > 0,
+                },
             }
+
             if session_id is not None:
                 callback_payload["session_id"] = session_id
 
-            print(callback_payload)
             logger.info(
-                f"DEBUG: Sending callback to {callback_url} with payload: {callback_payload}"
+                f"Sending callback to {callback_url} for task {task_id} with {successful_count}/{len(request_data.datasets)} successful datasets"
             )
-            await send_callback(callback_url, callback_payload)
-            logger.info(
-                f"Callback sent successfully for task {task_id} with {callback_url}"
+
+            # Send callback with enhanced error handling
+            callback_result = await send_callback(
+                callback_url, callback_payload, callback_retries, callback_timeout
             )
-            logger.info("Generation task completed successfully")
+
+            if callback_result["success"]:
+                logger.info(
+                    f"Callback sent successfully for task {task_id} after {callback_result['attempts']} attempts"
+                )
+            else:
+                logger.error(
+                    f"Callback failed for task {task_id}: {callback_result['reason']} - {callback_result.get('last_error', 'Unknown error')}"
+                )
+                # Update task status to indicate callback failure
+                task_status_store[task_id]["callback_status"] = "failed"
+                task_status_store[task_id]["callback_error"] = callback_result.get(
+                    "last_error", "Unknown callback error"
+                )
+
+            logger.info("Generation task completed")
 
     except Exception as e:
         logger.exception(f"Error in background generation for task {task_id}: {str(e)}")
+
+        # Categorize the exception
+        error_category = "unknown_error"
+        if "timeout" in str(e).lower():
+            error_category = "timeout_error"
+        elif "memory" in str(e).lower() or "out of memory" in str(e).lower():
+            error_category = "memory_error"
+        elif "disk" in str(e).lower() or "space" in str(e).lower():
+            error_category = "disk_error"
+        elif "network" in str(e).lower() or "connection" in str(e).lower():
+            error_category = "network_error"
+
         task_status_store[task_id] = {
             "status": "failed",
             "message": f"Error generating bulk datasets: {str(e)}",
             "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "results": [],
             "error": str(e),
+            "error_category": error_category,
         }
+
+        # Send failure callback if configured
+        callback_config = config.get("callback", {})
+        callback_url = callback_config.get("url")
+
+        if callback_url:
+            failure_payload = {
+                "task_id": task_id,
+                "status": "failed",
+                "message": f"Bulk generation failed: {str(e)}",
+                "error": str(e),
+                "error_category": error_category,
+                "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "summary": {
+                    "total_datasets": len(request_data.datasets)
+                    if "request_data" in locals()
+                    else 0,
+                    "successful_datasets": 0,
+                    "failed_datasets": len(request_data.datasets)
+                    if "request_data" in locals()
+                    else 0,
+                    "critical_failure": True,
+                },
+            }
+
+            try:
+                await send_callback(callback_url, failure_payload)
+                logger.info(f"Failure callback sent for task {task_id}")
+            except Exception as callback_error:
+                logger.error(
+                    f"Failed to send failure callback for task {task_id}: {str(callback_error)}"
+                )
 
 
 @router.post("/generate-bulk", response_model=GenerateResponse)
