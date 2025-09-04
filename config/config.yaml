@@ -79,7 +79,6 @@ directories:
   templates: "templates"
   user_configs: "user_configs"
 
-# Default generation settings
 generation:
   default_num_examples: 10
   default_language: "et"
@@ -161,8 +160,6 @@ data_sources:
     base_path: "data"
     patterns: ["**/cleaned.txt"]
     recursive: true
-
-
 
 # Model settings
 models:
