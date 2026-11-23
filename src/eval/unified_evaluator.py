@@ -538,7 +538,7 @@ def eval_single_agency_level(
                 "agencies_evaluated": agencies,
                 "topics_evaluated": topics,
                 "valid_pairs": len(valid_pairs),
-                "evaluation_mode": "unified_cache",
+                "evaluation_mode": "unified_redis",
                 "session_id": session_id,
             },
             "performance": {
